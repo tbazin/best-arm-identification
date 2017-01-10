@@ -10,7 +10,7 @@
 using Distributions
 using PyPlot
 
-MAX_ITERATION = 20000
+MAX_ITERATION = 40000
 
 include("KLfunctions.jl")
 
@@ -184,7 +184,7 @@ function checkRecommendation(true_means, empirical_means, M)
 end
 
 
-function TrackAndStop(mu,delta,rate,M=1)
+function TrackAndStop(mu, delta, rate; M=1, useStopppingStatistic=true)
     condition = true
     K=length(mu)
     N = zeros(1,K)
@@ -228,7 +228,7 @@ function TrackAndStop(mu,delta,rate,M=1)
             Index=collect(1:K)
             splice!(Index,Best)
             Score=minimum([NB*d(muB,MuMid[i])+N[i]*d(Mu[i],MuMid[i]) for i in Index])
-            if (Score > rate(t,0,delta))
+            if (Score > rate(t,0,delta)) && useStopppingStatistic
                 # stop 
                 condition=false
             elseif (t > MAX_ITERATION || t > 10000000)
@@ -844,10 +844,20 @@ function bestarm(means)
     # Shuffle to avoid focusing on a single arm
     return shuffle(IndMax)
 end
-    
-function ATLUCB(means, deltaStop, rate, M=1, delta1=1/2, alpha=0.99, eps=0)
-    #=Anytime-LUCB algorithm
 
+function mbestarms(means, M)
+    m_best = sortperm(means, rev=true)[1:M]
+    return m_best
+end
+
+function checkListEquality(true_best, recommendation)
+    return sort(true_best) == sort(recommendation)
+end
+
+function ATLUCB(means, deltaStop, rate, M=1, delta1=1/2, alpha=0.99, eps=0,
+                useStopppingStatistic=false)
+    #=Anytime-LUCB algorithm
+    
     Return a Generator object allowing to control the number of iteration
     i.e. the degree of precision of the algorithm.
 
@@ -864,6 +874,7 @@ function ATLUCB(means, deltaStop, rate, M=1, delta1=1/2, alpha=0.99, eps=0)
 
     Input arguments:
       * means, an array of floats: the Multi-Arm Bandit to estimate,
+      * M, an integer: the number of best arms to track,
       * delta1, a float (in [1/200, mab.K]): the initial failure rate for
        the first stage,
       * alpha, a float (in [1/50, 1)): the discount factor, defines the
@@ -874,6 +885,8 @@ function ATLUCB(means, deltaStop, rate, M=1, delta1=1/2, alpha=0.99, eps=0)
     sums = zeros(K)
     drawcounts = zeros(K)
 
+    true_best_m = mbestarms(means, M)
+
     # sample once from all of the arms
     for arm in 1:K
         sample_value = sample(means[arm])
@@ -881,16 +894,16 @@ function ATLUCB(means, deltaStop, rate, M=1, delta1=1/2, alpha=0.99, eps=0)
         sums[arm] += sample_value
     end
     empirical_means = sums ./ drawcounts
-    current_best_arm = bestarm(empirical_means)[1]
+    current_best_arms = mbestarms(means, M)
     
     t = 1
     stage = 1
 
     J = []
-    push!(J, current_best_arm)
+    push!(J, current_best_arms)
 
     recommendation_history = Int[]
-    correct_reco = checkRecommendation(means, empirical_means, M)
+    correct_reco = checkListEquality(true_best_m, J[t])
     push!(recommendation_history, correct_reco)
     
     min_means_history = Float64[]
@@ -905,50 +918,53 @@ function ATLUCB(means, deltaStop, rate, M=1, delta1=1/2, alpha=0.99, eps=0)
     function delta_s(s)
         return delta1 * alpha^(s-1)
     end
-        
+    
     while t < MAX_ITERATION
         delta = delta_s(stage)
         
         empirical_means = sums ./ drawcounts
         current_best_arm = bestarm(empirical_means)[1]
-
-        # compute the stopping statistic from TrackAndStop
-        NB = drawcounts[current_best_arm]
-        SB = sums[current_best_arm]
-        muB = SB/NB
-        MuMid = (SB+sums)./(NB+drawcounts)
-        Index = collect(1:K)
-        splice!(Index,current_best_arm)
-        Score = minimum([(NB*d(muB,MuMid[i])+
-                          drawcounts[i]*d(empirical_means[i],MuMid[i]))
-                         for i in Index])
-        if (Score > rate(t,0,deltaStop))
-            # stop
-            break
+        current_best_arms = mbestarms(empirical_means, M)
+        
+        if useStopppingStatistic
+            # compute the stopping statistic from TrackAndStop
+            NB = drawcounts[current_best_arm]
+            SB = sums[current_best_arm]
+            muB = SB/NB
+            MuMid = (SB+sums)./(NB+drawcounts)
+            Index = collect(1:K)
+            splice!(Index,current_best_arm)
+            Score = minimum([(NB*d(muB,MuMid[i])+
+                              drawcounts[i]*d(empirical_means[i],MuMid[i]))
+                             for i in Index])
+            if (Score > rate(t,0,deltaStop))
+                # stop
+                break
+            end
         end
         
-        if term(empirical_means, drawcounts, t, delta, eps)
+        if term(empirical_means, drawcounts, M, t, delta, eps)
             min_stage = delta + 1
             new_stage = maxStageIndex(empirical_means, drawcounts,
-                                      min_stage,
+                                      M, min_stage,
                                       delta_s, t, eps)
-            if new_stage >= 50
+            if new_stage >= 100
                 break
             end
             
             stage = new_stage
-            push!(J, current_best_arm)
+            push!(J, current_best_arms)
         else
             if stage == 1
-                push!(J, current_best_arm)
+                push!(J, current_best_arms)
             else
                 push!(J, J[t])  # keep last estimate
             end
         end
         
-        lowest_best_arm = h(empirical_means, drawcounts,
+        lowest_best_arm = h(empirical_means, drawcounts, M,
                             t, delta_s(stage))
-        highest_bad_arm = l(empirical_means, drawcounts,
+        highest_bad_arm = l(empirical_means, drawcounts, M,
                             t, delta_s(stage))
         
         # Draw lowest best arm
@@ -959,7 +975,7 @@ function ATLUCB(means, deltaStop, rate, M=1, delta1=1/2, alpha=0.99, eps=0)
         # store current estimates
         empirical_means = sums ./ drawcounts
 
-        correct_reco = checkRecommendation(means, empirical_means, M)
+        correct_reco = checkListEquality(true_best_m, J[t])
         push!(recommendation_history, correct_reco)
         
         m_best_empirical_means_ind = sortperm(empirical_means, rev=true)[1:M]
@@ -975,7 +991,7 @@ function ATLUCB(means, deltaStop, rate, M=1, delta1=1/2, alpha=0.99, eps=0)
         # store current estimates
         empirical_means = sums ./ drawcounts
 
-        correct_reco = checkRecommendation(means, empirical_means, M)
+        correct_reco = checkListEquality(true_best_m, J[t])
         push!(recommendation_history, correct_reco)
         
         m_best_empirical_means_ind = sortperm(empirical_means, rev=true)[1:M]
@@ -985,18 +1001,18 @@ function ATLUCB(means, deltaStop, rate, M=1, delta1=1/2, alpha=0.99, eps=0)
 
         t += 1
     end
-    print("\nMaximum iteration reached for AT-LUCB, J[t] = $(J[t])\n")
-    return (J[end], drawcounts, recommendation_history,
-            min_means_history, sum_means_history)
+print("\nMaximum iteration reached for AT-LUCB, J[t] = $(J[t])\n")
+return (J[end], drawcounts, recommendation_history,
+        min_means_history, sum_means_history)
 end
 
 
-function maxStageIndex(empirical_means, drawcounts, min_stage_index,
-                       delta_s_func, t, eps)
+function maxStageIndex(empirical_means, drawcounts, M,
+                       min_stage_index, delta_s_func, t, eps)
     # Get greatest stage index that is not terminating
     # NOTE: Hack here to ensure termination
     stage_index = min_stage_index
-    while (!term(empirical_means, drawcounts,
+    while (!term(empirical_means, drawcounts, M,
                  t, delta_s_func(stage_index+1), eps) &&
            stage_index < 50)
         stage_index += 1
@@ -1013,10 +1029,10 @@ function checkparameters(K, delta, alpha, eps)
 end
 
 
-function term(empirical_means, drawcounts, t, delta, eps)
+function term(empirical_means, drawcounts, M, t, delta, eps)
     # Check if the current confidence gap is below the threshold eps
-    lowest_best_arm = h(empirical_means, drawcounts, t, delta)
-    highest_worst_arm = l(empirical_means, drawcounts, t, delta)
+    lowest_best_arm = h(empirical_means, drawcounts, M, t, delta)
+    highest_worst_arm = l(empirical_means, drawcounts, M, t, delta)
     lower_bounds = L(empirical_means, drawcounts, t, delta)
     upper_bounds = U(empirical_means, drawcounts, t, delta)
 
@@ -1066,13 +1082,13 @@ function U(empirical_means, drawcounts, t, delta)
 end
 
 
-function h(empirical_means, drawcounts, t, delta)
+function h(empirical_means, drawcounts, M, t, delta)
     #= Smallest of the M best arms under LCB
 
     Arms with equal means are shuffled so as to avoid focusing on
     a single value.
     =#
-    bestarms = bestarm(empirical_means)
+    bestarms = mbestarms(empirical_means, M)
 
     L_best = L(empirical_means, drawcounts, t, delta)[bestarms]
 
@@ -1085,14 +1101,14 @@ function h(empirical_means, drawcounts, t, delta)
 end
 
 
-function l(empirical_means, drawcounts, t, delta)
+function l(empirical_means, drawcounts, M, t, delta)
     #= Largest of the non-top M arms under UCB
 
     Arms with equal means are shuffled so as to avoid focusing on
     a single value.
     =#
     K = length(empirical_means)
-    bestarms = bestarm(empirical_means)
+    bestarms = mbestarms(empirical_means, M)
 
     # Get the arms not in the current top M estimate
     is_not_in_bestarms = x -> !(in(x, bestarms))
