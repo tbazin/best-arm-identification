@@ -145,7 +145,8 @@ function avg_diffLength!(seq1, seq2, num_sequences)
 end
 
 function multipleAVG_bestM(mu, delta, policy, namePol, N, M;
-                           save=false, saveFolder="./results", overwrite=false)
+                           save=false, saveFolder="./results", overwrite=false,
+                           useStopppingStatistic=false)
     best = find(mu .== maximum(mu))[1]
     
     avg_reco_correct = Float64[0.]
@@ -155,7 +156,7 @@ function multipleAVG_bestM(mu, delta, policy, namePol, N, M;
     # Average over multiple independent runs
     for i in 1:N
         (_, _, reco_history, min_means_history,
-         sum_means_history) = policy(mu, delta, explo, M)
+         sum_means_history) = policy(mu, delta, explo, M, useStopppingStatistic)
 
         avg_reco_correct = avg_diffLength!(avg_reco_correct, reco_history, N)
         avg_min_mean = avg_diffLength!(avg_min_mean, min_means_history, N)
@@ -224,10 +225,10 @@ function plotAVG(ax_proba, ax_min, ax_sum, delta, N, M, namePol;
             plot(avg_reco_correct[1:end], linewidth=1, marker="+",
                  label=namePol)
             figure()
-            plot(avg_min_mean[1:min(1000, end)], linewidth=1, marker="+",
+            plot(avg_min_mean[1:end], linewidth=1, marker="+",
                  label=namePol)
             figure()
-            plot(avg_sum_means[1:min(1000, end)], linewidth=1, marker="+",
+            plot(avg_sum_means[1:end], linewidth=1, marker="+",
                  label=namePol)
             #=
             ax_proba[:plot](avg_reco_correct, linewidth=1, marker="+",
@@ -247,18 +248,41 @@ function plotAVG(ax_proba, ax_min, ax_sum, delta, N, M, namePol;
     end
 end
 
-mu = rand(10); # [0.1, 0.2, 0.5, 0.3, 0.45, 0.48]
+mu = rand(100); [0.1, 0.2, 0.5, 0.3, 0.45, 0.48]
+
+function linear(n)
+    # n floats in [0,1] with linearly increasing gap
+    return 0.9/(n-1) * (n - collect(1:n))
+end
+
+print(linear(100))
+
+function polynomial(n)
+    # n floats in [0,1] with linearly increasing gap
+    return [0.9; 0.9*(1 - sqrt(collect(2:n)/n))]
+end
+
+print(polynomial(10))
+
+function sparse(n)
+    # very sparse collection of means
+    return [0.5; zeros(99)]
+end
+
+mu = linear(100);
 print("Best = $(find(mu .== maximum(mu))[1])")
+best_m = 
 
 policies = [ATLUCB, TrackAndStop]
 namePols = ["ATLUCB", "TrackAndStop"]
 do_policies = [1]
 N = 10
-M = 2
+M = 20
 overwrite = true
 for policy in do_policies
     multipleAVG_bestM(mu, delta, policies[1], namePols[1], N, M,
-                      save=true, saveFolder="./results", overwrite=overwrite)
+                      save=true, saveFolder="./results", overwrite=overwrite,
+                      useStopppingStatistic=true)
 end
 
 ax_proba, ax_min, ax_sum = init_plotAVG()
